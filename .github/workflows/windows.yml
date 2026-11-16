@@ -1,0 +1,59 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test core and compile sources
+        run: |
+          python -m unittest test_core -v
+          python -m py_compile app.py core.py
+      - name: Download official Android Platform-Tools
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://dl.google.com/android/repository/platform-tools-latest-windows.zip -OutFile platform-tools.zip
+          Expand-Archive platform-tools.zip -DestinationPath android-sdk
+          New-Item -ItemType Directory tools -Force
+          Copy-Item android-sdk/platform-tools/adb.exe,android-sdk/platform-tools/AdbWinApi.dll,android-sdk/platform-tools/AdbWinUsbApi.dll,android-sdk/platform-tools/NOTICE.txt tools/
+      - name: Package Windows app
+        shell: pwsh
+        run: |
+          python -m pip install pyinstaller==6.22.3
+          python -m PyInstaller --noconfirm --windowed --onedir --name QQPhoneLyrics --add-data 'tools;tools' app.py
+          Copy-Item README.md,LICENSE dist/QQPhoneLyrics/
+          Copy-Item docs dist/QQPhoneLyrics/docs -Recurse
+          Compress-Archive -Path dist/QQPhoneLyrics -DestinationPath QQPhoneLyrics-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QQPhoneLyrics-Windows-x64
+          path: QQPhoneLyrics-Windows-x64.zip
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: QQPhoneLyrics-Windows-x64
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" QQPhoneLyrics-Windows-x64.zip --title "$RELEASE_TAG" --generate-notes
