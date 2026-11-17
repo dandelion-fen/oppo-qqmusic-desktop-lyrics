@@ -138,12 +138,12 @@ def similarity(title, artist, name, singer):
             + difflib.SequenceMatcher(None, clean(artist), clean(singer)).ratio() * 0.25)
 
 
-def fetch_lyrics(title, artist, cache_dir):
+def fetch_lyrics(title, artist, cache_dir, force=False):
     import hashlib
     cache_dir = Path(cache_dir)
     key = hashlib.sha256((title + '\0' + artist).encode()).hexdigest()
     cached = cache_dir / (key + '.json')
-    if cached.exists():
+    if cached.exists() and not force:
         try:
             value = json.loads(cached.read_text(encoding='utf-8'))
             if parse_lrc(value['lrc']):
@@ -164,7 +164,10 @@ def fetch_lyrics(title, artist, cache_dir):
             else:
                 data = request_json('https://music.163.com/api/search/get/web',
                                     {'s': title + ' ' + artist, 'type': 1, 'limit': 8})
-                songs = data.get('result', {}).get('songs', [])
+                result = data.get('result', {})
+                if not isinstance(result, dict):
+                    raise RuntimeError('搜索服务返回异常，请稍后重试')
+                songs = result.get('songs', [])
                 options = [(similarity(title, artist, s['name'], '/'.join(a['name'] for a in s['artists'])), s) for s in songs]
             for score, song in sorted(options, key=lambda p: p[0], reverse=True)[:3]:
                 if score < 0.72:
@@ -179,6 +182,8 @@ def fetch_lyrics(title, artist, cache_dir):
                     data = request_json('https://music.163.com/api/song/lyric?' + urllib.parse.urlencode(
                         {'id': song['id'], 'lv': -1, 'kv': -1, 'tv': -1}))
                     lrc = data.get('lrc', {}).get('lyric', '')
+                if not isinstance(lrc, str):
+                    continue
                 lrc = html.unescape(lrc)
                 if parse_lrc(lrc):
                     result = {'lrc': lrc, 'source': provider, 'matched': song['name']}

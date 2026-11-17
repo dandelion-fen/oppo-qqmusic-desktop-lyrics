@@ -112,7 +112,7 @@ class App:
                             command=lambda k=key, v=var: self.set_option(k, v.get())).pack(anchor='w', pady=4)
         row = ttk.Frame(panel); row.pack(fill='x', pady=12)
         ttk.Button(row, text='加载本地 LRC', command=self.load_lrc).pack(side='left')
-        ttk.Button(row, text='重新匹配歌词', command=self.retry).pack(side='left', padx=8)
+        ttk.Button(row, text='重新同步 / 匹配', command=self.retry).pack(side='left', padx=8)
         ttk.Button(row, text='恢复歌词位置', command=lambda: self.lyric.geometry(DEFAULTS['geometry'])).pack(side='left')
         ttk.Label(panel, text='调整位置和大小：点击上方按钮 → 左上角拖动、右下角缩放 → 完成调整。\n'
                   'Ctrl + 鼠标滚轮调整字号，也可使用字号滑块。Ctrl+Alt+L 进入调整模式。\n'
@@ -265,7 +265,7 @@ class App:
                 self.events.put(('error', str(exc)))
             self.stop.wait(0.4 if self.config.get('direct_lyrics') else 0.8)
 
-    def lookup(self):
+    def lookup(self, force=False):
         if not self.playback:
             return
         self.generation += 1; generation = self.generation
@@ -273,7 +273,7 @@ class App:
         self.source_text.set('正在匹配歌词…')
         def work():
             try:
-                result = fetch_lyrics(title, artist, DATA / 'cache')
+                result = fetch_lyrics(title, artist, DATA / 'cache', force=force)
                 self.events.put(('lyrics', generation, result))
             except Exception as exc:
                 self.events.put(('lyrics_error', generation, str(exc)))
@@ -281,8 +281,21 @@ class App:
 
     def retry(self):
         self.demo = False
-        if self.playback:
-            self.lookup()
+        self.generation += 1
+        self.status.set('正在重新读取手机播放状态…')
+        def work():
+            try:
+                adb = locate_adb(self.config['adb'])
+                found = [d for d in devices(adb) if not d.startswith('emulator-')]
+                if not found:
+                    raise RuntimeError('手机未连接，请检查 USB 调试授权')
+                p = sample(adb, found[0])
+                if not p:
+                    raise RuntimeError('未读取到 QQ 音乐，请先在手机播放歌曲')
+                self.events.put(('resync', p))
+            except Exception as exc:
+                self.events.put(('error', str(exc)))
+        threading.Thread(target=work, daemon=True).start()
 
     def load_lrc(self):
         path = filedialog.askopenfilename(filetypes=[('LRC 歌词', '*.lrc'), ('文本', '*.txt')])
@@ -323,7 +336,16 @@ class App:
             except queue.Empty:
                 break
             kind = event[0]
-            if kind == 'wireless':
+            if kind == 'resync':
+                self.playback = event[1]
+                self.key = (self.playback.title, self.playback.artist)
+                self.rows = []; self.last_line = None
+                self.config['direct_lyrics'] = False
+                self.variables['direct_lyrics'].set(False)
+                self.save()
+                self.song_text.set(self.playback.title + ' — ' + self.playback.artist)
+                self.lookup(force=True)
+            elif kind == 'wireless':
                 try: event[1].set(event[2])
                 except tk.TclError: pass
             elif kind == 'sample' and not self.demo:
